@@ -1,0 +1,45 @@
+import com.android.build.gradle.BaseExtension
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+val newBuildDir: Directory =
+    rootProject.layout.buildDirectory
+        .dir("../../build")
+        .get()
+rootProject.layout.buildDirectory.value(newBuildDir)
+
+subprojects {
+    val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
+    project.layout.buildDirectory.value(newSubprojectBuildDir)
+}
+
+subprojects {
+    afterEvaluate {
+        if (project.hasProperty("android")) {
+            val androidExtension = project.extensions.findByName("android")
+            if (androidExtension is BaseExtension) {
+                // Force modern SDK levels for all Android modules (app + plugins).
+                // This prevents resource linking failures for attrs like android:attr/lStar.
+                androidExtension.compileSdkVersion(36)
+                androidExtension.defaultConfig.targetSdk = 36
+
+                if (androidExtension.namespace == null) {
+                    androidExtension.namespace = project.group.toString()
+                }
+            }
+        }
+    }
+}
+
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+tasks.register<Delete>("clean") {
+    delete(rootProject.layout.buildDirectory)
+}
