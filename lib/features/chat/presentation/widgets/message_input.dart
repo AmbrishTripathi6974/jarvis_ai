@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class MessageInput extends StatefulWidget {
   const MessageInput({
@@ -203,9 +204,14 @@ class _MessageInputState extends State<MessageInput> {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Camera'),
+                onTap: () => Navigator.of(context).pop(_ComposerAction.camera),
+              ),
+              ListTile(
                 leading: const Icon(Icons.image_outlined),
-                title: const Text('Photo'),
-                onTap: () => Navigator.of(context).pop(_ComposerAction.photo),
+                title: const Text('Gallery'),
+                onTap: () => Navigator.of(context).pop(_ComposerAction.gallery),
               ),
             ],
           ),
@@ -218,12 +224,19 @@ class _MessageInputState extends State<MessageInput> {
     }
 
     switch (action) {
-      case _ComposerAction.photo:
-        await _pickImage();
+      case _ComposerAction.camera:
+        await _pickImageFromCamera();
+      case _ComposerAction.gallery:
+        await _pickImageFromGallery();
     }
   }
 
-  Future<void> _pickImage() async {
+  Future<void> _pickImageFromGallery() async {
+    final canReadPhotos = await _ensurePhotoPermission();
+    if (!canReadPhotos) {
+      return;
+    }
+
     final file = await _imagePicker.pickImage(source: ImageSource.gallery);
     if (file == null) {
       return;
@@ -234,6 +247,146 @@ class _MessageInputState extends State<MessageInput> {
       _selectedImageBytes = bytes;
       _selectedImageMimeType = _mimeTypeFromPath(file.path);
     });
+  }
+
+  Future<void> _pickImageFromCamera() async {
+    final canUseCamera = await _ensureCameraPermission();
+    if (!canUseCamera) {
+      return;
+    }
+
+    final file = await _imagePicker.pickImage(source: ImageSource.camera);
+    if (file == null) {
+      return;
+    }
+
+    final bytes = await file.readAsBytes();
+    setState(() {
+      _selectedImageBytes = bytes;
+      _selectedImageMimeType = _mimeTypeFromPath(file.path);
+    });
+  }
+
+  Future<bool> _ensurePhotoPermission() async {
+    final photosStatus = await Permission.photos.status;
+    if (photosStatus.isGranted || photosStatus.isLimited) {
+      return true;
+    }
+
+    final storageStatus = await Permission.storage.status;
+    if (storageStatus.isGranted) {
+      return true;
+    }
+
+    PermissionStatus nextStatus;
+    if (photosStatus.isDenied || photosStatus.isRestricted) {
+      nextStatus = await Permission.photos.request();
+      if (nextStatus.isGranted || nextStatus.isLimited) {
+        return true;
+      }
+    } else {
+      nextStatus = photosStatus;
+    }
+
+    if (nextStatus.isPermanentlyDenied || nextStatus.isRestricted) {
+      await _showPermissionSettingsDialog(
+        resourceName: 'photo',
+        message: 'Allow photo access in app settings to pick an image.',
+      );
+      return false;
+    }
+
+    final requestedStorage = await Permission.storage.request();
+    if (requestedStorage.isGranted) {
+      return true;
+    }
+
+    if (requestedStorage.isPermanentlyDenied && mounted) {
+      await _showPermissionSettingsDialog(
+        resourceName: 'photo',
+        message: 'Allow photo access in app settings to pick an image.',
+      );
+    } else if (mounted) {
+      _showPermissionDeniedSnackBar();
+    }
+
+    return false;
+  }
+
+  Future<void> _showPermissionSettingsDialog({
+    required String resourceName,
+    required String message,
+  }) async {
+    if (!mounted) {
+      return;
+    }
+
+    final shouldOpenSettings = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Permission required'),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Open settings'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldOpenSettings == true) {
+      await openAppSettings();
+    } else {
+      _showPermissionDeniedSnackBar(
+        message: '$resourceName permission is needed for this action.',
+      );
+    }
+  }
+
+  Future<bool> _ensureCameraPermission() async {
+    final cameraStatus = await Permission.camera.status;
+    if (cameraStatus.isGranted) {
+      return true;
+    }
+
+    final nextStatus = await Permission.camera.request();
+    if (nextStatus.isGranted) {
+      return true;
+    }
+
+    if (nextStatus.isPermanentlyDenied || nextStatus.isRestricted) {
+      await _showPermissionSettingsDialog(
+        resourceName: 'Camera',
+        message: 'Allow camera access in app settings to take a photo.',
+      );
+      return false;
+    }
+
+    _showPermissionDeniedSnackBar(
+      message: 'Camera permission is needed to take photos.',
+    );
+    return false;
+  }
+
+  void _showPermissionDeniedSnackBar({String? message}) {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message ?? 'Photo permission is needed to attach images.'),
+        ),
+      );
   }
 
   void _handleSend() {
@@ -270,7 +423,7 @@ class _MessageInputState extends State<MessageInput> {
   }
 }
 
-enum _ComposerAction { photo }
+enum _ComposerAction { camera, gallery }
 
 class _ComposerIconButton extends StatelessWidget {
   const _ComposerIconButton({
